@@ -1,0 +1,20 @@
+{
+    "android_path": "scripts/jel2_Pixelfed_codec_android.sh",
+    "path": "scripts/jel2_decomposed_codec_p3.sh",
+
+    "args": {
+        "common": "-seed <secret> -bpf 1 -nfreqs 1 -maxfreqs 6",
+        "encode": "<coverfile>"
+    },
+
+    "media": {
+        "capacities": "destini-comms/covers/jpeg/capacities.txt",
+        "maximum": 3000
+    },
+
+    "initCommand": "/bin/bash -c scripts/initialize_jel2.sh this is a test",
+
+    ".format": "Decomposed-COMMS",
+    "mime-type": "image/jpeg",
+    "encodingTime": 0.5
+}

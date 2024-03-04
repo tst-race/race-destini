@@ -1,0 +1,337 @@
+#!/usr/bin/env python
+
+import os
+import sys
+import glob
+import psutil
+import shutil
+import subprocess
+from subprocess import call, check_output, Popen
+import time
+import random
+import argparse
+from PIL import Image
+
+#
+# You will need ffmpeg to use this script, preferably version 4.1 or
+# 4.2, and ensure that aac is enabled, e.g. "./configure --enable-encoder=aac"
+#
+
+ffmpeg = "/usr/bin/ffmpeg"
+if not os.path.exists(ffmpeg):
+   ffmpeg = "/usr/local/bin/ffmpeg"
+
+wedge = "/usr/local/bin/wedge"
+unwedge = "/usr/local/bin/unwedge"
+
+#convert = "/usr/bin/convert"
+#if not os.path.exists(convert):
+#    convert = "/usr/local/bin/convert"
+
+
+parser = argparse.ArgumentParser(description='Extract steganographic content from a video stream.')
+parser.add_argument('-steg',  required=True, help='A stegged input video.')
+parser.add_argument('-message', required=True,  help='A file to contain the extracted message.')
+parser.add_argument('-seed', type=int, default=None, help='If provided, sets the seed for PRN selection of frequencies.')
+parser.add_argument('-bpf', type=int, default=4, help='Bits per frequency to use for embedding (default=1)')
+parser.add_argument('-ecc', type=int, default=None, help='If provided, dictates the ECC block length. (default=None)')
+parser.add_argument('-scale', type=int, default=None, help='If provided, sets the scale factor of the stegged video (e.g., 2 means it was doubled after steg)')
+parser.add_argument('-freq_list', default=None, help='If provided, overrides all quality settings and uses the specified comma-separated frequency indices for encoding.')
+parser.add_argument('-nfreqs', type=int, default=4, help='If provided, dictates the number of frequencies per MCU.')
+parser.add_argument('-quality', type=int, default=None, help='If provided, transcode to this quality before running unwedge.')
+parser.add_argument('-maxfreqs', type=int, default=4, help='If provided, sets the total number of frequencies for consideration.')
+parser.add_argument('-quanta', type=int, default=8, help='Number of quanta to use (default 8).')
+parser.add_argument('-mcudensity', type=int, default=100, help='Percentage of MCU usage (default 100).')
+parser.add_argument('-min_chunk_size', type=int, default=16, help='Minimum per-frame chunk size for packetizing the message.')
+#parser.add_argument('-rate_out', type=int, default=30, help='Frame rate for assembling output video (default=30).')
+parser.add_argument('-rate_out', type=int, default=None, help='Frame rate for assembling output video (default=None).  If None, uses ffmpeg defaults.')
+ns = parser.parse_args()
+
+
+def maybe_mkdir(dir):
+   try:
+      os.mkdir(dir)
+   except:
+      print("Cleaning and reusing {}.".format(dir))
+      files = glob.glob(dir+"/*")
+      for f in files:
+         os.remove(f)
+
+maybe_mkdir(".unwedge")
+# maybe_mkdir(".tmp")
+maybe_mkdir(".chunks_out")
+
+def checkIfProcessRunning(processName):
+    '''
+    Check if there is any running process that contains the given name processName.
+    '''
+    #Iterate over the all the running process
+    for proc in psutil.process_iter():
+        try:
+            # Check if process name contains the given name string.
+            if processName.lower() in proc.name().lower():
+                return True
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            pass
+    return False;
+
+    
+#def change_quality(filename, quality=None):
+#    if quality is not None:
+#       tmp_name = '.tmp/video_unwedge_tmp.jpg'
+#       shutil.move(filename, tmp_name)
+#       im = Image.open(tmp_name).save(filename, "JPEG", quality=quality)
+
+
+def _wait_for_files (glob_pat, want_count, wait_time = 2, iter_count = 5):
+   for _ in range (iter_count):
+      _files = glob.glob (glob_pat)
+      _num   = len (_files)
+      if _num == want_count:
+         break
+
+      print (f'_wait_for_files ("{glob_pat}"): want {want_count} but only saw {_num}')
+
+      time.sleep (wait_time)
+      wait_time *= 2
+
+
+steg_video = ns.steg
+message_out = ns.message
+seed = ns.seed
+print("PRN seed is {}.".format(seed))
+maxfreqs = ns.maxfreqs
+quanta = ns.quanta
+mcudensity = ns.mcudensity
+nfreqs = ns.nfreqs
+
+if seed is not None:
+    random.seed(seed)
+
+if ns.freq_list is not None:
+    ns.quality = None
+    freq_list = [ int(x) for x in ns.freq_list.split(',') ]
+    print("Overriding quality settings with these frequencies: {}".format(freq_list) )
+    # Use the frequency list as a reference, but let nfreqs and
+    # maxfreqs dictate usage:
+    ns.maxfreqs = len(freq_list)
+    print("Overriding maxfreqs and setting it to {}".format(ns.maxfreqs) )
+
+
+   
+log = open('.unwedge/video_unwedge.log', 'a+')
+
+p = [ "-pix_fmt", "yuv420p",
+      "-vsync", "0",
+      "-q:v", "1",
+      "-b:v", "1500"
+      ]
+
+if ns.scale is None:
+    cmd = [ffmpeg,  "-i", steg_video] + p + [".unwedge/frame-%04d.jpg"] 
+else:
+    s = 1.0 / float(ns.scale)
+    cmd = [ffmpeg,  "-i", steg_video] + p + [ "-vf", "scale=iw*{}:ih*{}".format(s,s), ".unwedge/frame-%04d.jpg"] 
+
+print ("calling", cmd)
+call(cmd)
+log.write("{}\n".format( cmd ))
+
+
+frame_files = glob.glob(".unwedge/*.jpg")
+frame_files.sort()
+
+
+chunk_files = {}
+
+# There is an off-by-one error somewhere: when unpacking a steg MPEG
+# video, we end up with one extra frame at the start.  Unfortunately,
+# this leads to an offset as encoded here, where we start at 0,
+# instead of 1.  
+
+hack = False
+if hack:
+   i = 0
+else:
+   i = -1
+
+param_list = [ "-quanta", str(ns.quanta), "-bpf", str(ns.bpf), "-nfreqs", str(ns.nfreqs), "-maxfreqs", str(ns.maxfreqs), "-mcudensity", str(ns.mcudensity) ]
+#param_list = [ "-mcudensity", str(ns.mcudensity) ]
+
+if ns.ecc is None:
+    param_list += [ "-noecc" ]
+else:
+    param_list += [ "-ecc", str(ns.ecc) ]
+
+if ns.freq_list is not None:
+    param_list = param_list + [ "-freq", ns.freq_list ]
+
+print ("iterating through", len(frame_files), " frame files")
+
+cmdstring = ''
+convert_cmds = ''
+    
+for steg_frame in frame_files:
+    chunk_files[i+1] = ".chunks_out/{}.dat".format(i+1)
+
+    if ns.quality is not None:
+       qsteg_frame = '.unwedge/q' + os.path.basename(steg_frame)
+       convert_cmds = convert_cmds +  f"convert {steg_frame} -quality {ns.quality} {qsteg_frame}\n"
+       #       call( [convert, tmp_name, "-quality", quality, steg_frame] )
+       #       change_quality(steg_frame, ns.quality)
+       
+    if ns.seed is not None:
+           
+       # more off-by-one correction - need to sync the random number
+       # generator.  Don't call it until the second iteration:
+       
+       if (hack and i == 0):
+          s = 0
+       else:
+          s = random.randint(1,65536)
+          
+       cmdlist = [unwedge] + param_list + ["-seed", str(s),  qsteg_frame, chunk_files[i+1]]
+       
+    else:
+       cmdlist = [unwedge] + param_list + [qsteg_frame, chunk_files[i+1]]
+       
+    if log is not None:
+        log.write("{}\n".format(' '.join(cmdlist)))
+
+    cmdstring = cmdstring + ' '.join(cmdlist) + '\n'
+    i += 1
+
+print ("starting parallel")
+#
+# cmd = ['xargs', '-L', '1', '-I', 'CMD', 'bash', '-c', 'CMD', '-P', '4']
+cmd = ['parallel', '--jobs', '8']
+
+p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+_s_out, _s_err = p.communicate(input=convert_cmds.encode())
+
+if p.returncode:
+   print (f'parallel convert returned {p.returncode}')
+   with open ('/tmp/parallel-convert.log', 'a+') as l_out:
+      if _s_out:
+         l_out.write (_s_out)
+      if _s_err:
+         l_out.write (_s_err)
+
+
+# _wait_for_files (".tmp/q*.jpg", len (frame_files))
+
+p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+_s_out, _s_err = p.communicate(input=cmdstring.encode())
+
+if p.returncode:
+   print (f'parallel ffmpeg returned {p.returncode}')
+   with open ('/tmp/parallel-ffpmeg.log', 'a+') as l_out:
+      if _s_out:
+         l_out.write (_s_out)
+      if _s_err:
+         l_out.write (_s_err)
+      
+
+
+# _wait_for_files (".chunks_out/*.dat", len (chunk_files))
+
+n = i
+
+# This is a dict of all steg data packets found in this video:
+data = {}
+
+print ("reassembling chunks...")
+
+nchunks = 0
+for i in chunk_files:
+    chunk = chunk_files[i]
+    # Reach each extracted packet (one per frame) and assemble into
+    # the data dict.  Each entry in data is a list of packets with the
+    # same sequence number.  We use redundancy for weak error
+    # correction.
+    try:
+        with open(chunk, 'rb') as f:
+            s = f.read()
+            try:
+                seq = int(s[0:5])     # packet N (sequence number)
+                tot = int(s[5:10])     # out of M (total)
+                nchunks = tot
+                l = int(s[10:15])      # length of the packet
+                payload = s[15:]
+                if (len(payload) != l):
+                    print( "Packet {}: Payload length is {} but header says {}!".format(i, len(payload), l))
+                else:
+                    # accumulate a list of all the payloads that had
+                    # this sequence number:
+                    try:
+                        entry = data[seq] + [(tot, l, payload)]
+                    except:
+                        entry = [(tot, l, payload)]
+                    data[seq] = entry
+            except Exception as e:
+                print("frame {} packet fail. ({})".format(i,e))
+    except Exception as e:
+        print("frame {} read fail. ({})".format(i,e))
+
+
+# Weak error correction: We should see several packets with the same
+# sequence number, since we rotate through the list of packets on the
+# embedding side.  This next function considers a histogram dict and
+# returns the character with the highest frequency:
+
+def winner(d):
+    maxcount = 0
+    best = None
+    for ch in d:
+        n = d[ch]
+        if n > maxcount:
+            maxcount = n
+            best = ch
+    return best
+
+
+# Each entry of the data dict defined above has a packet with the same
+# sequence number.  Here we look at one data dict entry (a list of
+# those packets) and assemble a "correct" payload using the winning
+# character at each place:
+
+def vote(pkt_list, debug_out=None):
+    payload_len = pkt_list[0][1]
+    # Create the result string
+    payload = [' ' for i in range(payload_len)]
+    # Histogram - how often a character appears at each place in the
+    # payload:
+    votes = [{} for i in range(payload_len)]
+    for (tot, l, p) in pkt_list:
+        for i in range(l):
+            d = votes[i]
+            next_char = p[i]
+            try:
+                n = d[next_char]
+            except:
+                n = 0
+            d[next_char] = n + 1
+    if debug_out is not None:
+        with open(debug_out, 'w') as f:
+            f.write("{}\n".format(votes))
+    # Now assemble the "winner" string:
+    for place in range(payload_len):
+        ch = winner(votes[place])
+        payload[place] = ch
+    str_out = bytearray(payload)
+    return str_out
+                
+
+
+
+with open(message_out, 'wb') as f:
+    for i in range(1,nchunks+2):
+        try:
+            payload = vote(data[i])
+            f.write(payload)
+        except:
+            print("Bad packet {}/{}.".format(i,nchunks))
+            
+   
+         
+             

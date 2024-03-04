@@ -1,0 +1,427 @@
+#!/usr/bin/env python
+
+import os
+import sys
+import glob
+import zlib
+import shutil
+import subprocess
+from subprocess import call, check_output, Popen
+import argparse
+import random
+from PIL import Image
+
+# USE_NETPBM = True
+USE_PIDS = True
+STRICT_COLOR = True
+CLEANUP = True
+
+NPROCS='8'
+#NPROCS='1'
+
+#
+# You will need ffmpeg to use this script, preferably version 4.1 or
+# 4.2, and ensure that aac is enabled, e.g. "./configure --enable-encoder=aac"
+#
+
+# *sigh* - force the "local" version of ffmpeg - it's likely to be the
+# *one built from source:
+
+ffmpeg_prog = "/usr/local/bin/ffmpeg"
+if not os.path.exists(ffmpeg_prog):
+    # Fall back to the one that we might have picked up from debian:
+    ffmpeg_prog = "/usr/bin/ffmpeg"
+
+
+def checkprog(filename):
+    if os.path.isfile(filename):
+        return filename
+    else:
+        cmd = os.path.split(filename)[-1]
+        print("Can't find {}: File {} does not exist.".format(cmd, filename))
+        quit()
+
+def maybe_mkdir(dir):
+    try:
+        os.mkdir(dir)
+    except:
+        print("Cleaning and reusing {}.".format(dir))
+        files = glob.glob(dir+"/*")
+        for f in files:
+            os.remove(f)
+
+#
+if USE_PIDS:
+    default_wedge_dir = ".wedge." + str(os.getpid())
+else:
+    default_wedge_dir = ".wedge"
+
+parser = argparse.ArgumentParser(description='Insert steganographic content into a video stream.')
+parser.add_argument('-cover',  required=True, help='A cover input video.')
+parser.add_argument('-message', required=True,  help='A file to be embedded steganographically.')
+parser.add_argument('-output',  default=None, help='Steganographic output video.')
+parser.add_argument('-seed', type=int, default=None, help='If provided, sets the seed for PRN selection of frequencies. (default=None)')
+parser.add_argument('-bpf', type=int, default=1, help='Bits per frequency to use for embedding (default=1)')
+parser.add_argument('-scale', type=int, default=None, help='If provided, expands the image by the specified factor (e.g., 2 = double image size).')
+parser.add_argument('-ecc', type=int, default=None, help='If provided, dictates the ECC block length. (default=None)')
+parser.add_argument('-max', dest='max', action='store_true', help='If provided, forces settings to maximize bandwidth.  Overrides bpf, nfreqs, and mcudensity.')
+parser.add_argument('-nocache', dest='nocache', action='store_true', help='If provided, will NOT cache the cover images.')
+parser.add_argument('-nfreqs', type=int, default=4, help='If provided, dictates the number of frequencies per MCU. (default=4)')
+parser.add_argument('-freq_list', default=None, help='If provided, overrides all quality settings and uses the specified comma-separated frequency indices for encoding.')
+parser.add_argument('-maxfreqs', type=int, default=4, help='If provided, sets the total number of frequencies for consideration. (default=4)')
+parser.add_argument('-quanta', type=int, default=8, help='Number of quanta to use (default 8).')
+parser.add_argument('-quality', type=int, default=None, help='If provided, embed message at this quality. (default=None)')
+parser.add_argument('-jpeg_quality', type=int, default=None, help='If provided, transcode JPEGs to this quality before stegging.')
+parser.add_argument('-mcudensity', type=int, default=100, help='Percentage of MCU usage (default 100).')
+#parser.add_argument('-qp', type=int, default=12, help='Output quantization parameter value for conversion to .mp4')
+parser.add_argument('-min_chunk_size', type=int, default=16, help='Minimum per-frame chunk size for packetizing the message.')
+#parser.add_argument('-rate_out', type=int, default=30, help='Frame rate for assembling output video (default=30).')
+parser.add_argument('-rate_out', type=int, default=None, help='Frame rate for assembling output video (default=None).  If None, uses ffmpeg defaults.')
+parser.add_argument('-frames', default=None, help='Select a range of frames of the form <start>:<end> rather than the whole video.')
+parser.add_argument('-dir', default='/ramfs/destini', help='Main directory for caches')
+parser.add_argument('-comp', default='y', help='Color channels to use.  Can be any combination of y, u, v.')
+parser.add_argument('-wedge_dir', default=default_wedge_dir, help='directory for wedge frames')
+parser.add_argument('-bindir', default='/usr/local/bin/', help='Where to look for wedge, unwedge, and wcap.')
+ns = parser.parse_args()
+
+
+wedge_prog =     mj_wedge_bin
+wcap_prog  =     mj_wcap
+
+wedge_dir = ns.wedge_dir
+maybe_mkdir(wedge_dir)
+
+if USE_PIDS:
+    chunk_dir = ".chunks_in." + str(os.getpid())
+else:
+    chunk_dir = ".chunks_in"
+maybe_mkdir(chunk_dir)
+
+if not ns.nocache and not os.path.exists("/ramfs/destini/.cover"):
+    os.mkdir("/ramfs/destini/.cover")
+
+
+message_file = ns.message
+output_video = ns.output
+min_chunk_size = ns.min_chunk_size
+min_reps = 2
+if ns.nocache:
+    coverpath = ".cover/"
+else:
+    coverpath = "/ramfs/destini/.cover/" + os.path.splitext(os.path.basename(ns.cover))[0] + "/"
+covervideo = ns.cover
+
+
+if ns.nocache:
+    maybe_mkdir(coverpath)
+
+if not os.path.exists(coverpath):
+    os.mkdir(coverpath)
+
+if ns.max:
+    ns.bpf = 1
+    ns.nfreqs = 12
+    ns.maxfreqs = 12
+    ns.mcudensity=100
+    print("Using maximum bandwidth settings: bpf=1, nfreqs=12, maxfreqs=12, and mcudensity=100")
+elif ns.freq_list is not None:
+    ns.quality = None
+    ns.jpeg_quality = None
+    freq_list = [ int(x) for x in ns.freq_list.split(',') ]
+    print("Overriding quality settings with these frequencies: {}".format(freq_list) )
+    ns.maxfreqs = len(freq_list)
+    print("Overriding maxfreqs and setting it to {}".format(ns.maxfreqs) )
+
+if ns.seed is not None:
+    seed = ns.seed
+    print("PRN seed is {}.".format(seed))
+else:
+    seed = 0
+    print("No randomization.")
+
+if seed > 0:
+    random.seed(seed)
+
+
+bytes_per_mcu = float(ns.bpf * ns.nfreqs) / float(8)
+print("MCU Density = {}; Bytes per MCU = {}".format(ns.mcudensity, bytes_per_mcu))
+
+wav_file = coverpath + "audio.wav"
+    
+#############  EXTRACTION OF VIDEO FRAMES #############
+
+#ffmpeg_params = [ "-pix_fmt",  "yuv420p", "-qscale:v", "1", "-qmin", "1", "-vsync", "0", "-r", "25" ]
+ffmpeg_params = [ "-pix_fmt",  "yuv420p", "-codec", "copy", "-r", "25", "-qscale:v", "1", "-qmin", "1" ]
+
+# does this help preserve color spaces?
+if STRICT_COLOR:
+    ffmpeg_color = ['-color_primaries', 'smpte170m', '-color_trc', 'smpte170m', '-colorspace', 'smpte170m']
+else:
+    ffmpeg_color = [ ]
+
+# Extract the video track as a sequence of JPEGs if its not already there
+if ns.nocache or not os.path.exists(coverpath + "frame-0001.jpg"):
+    call( [ffmpeg_prog] + ffmpeg_color + [ "-i", covervideo] + ffmpeg_params + ffmpeg_color + [ coverpath+"frame-%04d.jpg"] )
+    # Extract the audio track:
+    call( [ffmpeg_prog] + [ "-i", covervideo, wav_file] )
+
+#############  ############# ############# #############
+
+# Compute frame count:
+frame_files = glob.glob(coverpath + "f*.jpg")
+nfiles = len(frame_files)
+
+if ns.frames:
+    l = ns.frames.split(':')
+    start_frame = int(l[0])
+    end_frame = int(l[1])
+else:
+    start_frame = 1
+    end_frame = nfiles
+
+
+nframes = (end_frame - start_frame) + 1
+print("Number of frames = {}.".format(nframes))
+
+#frame_capacity = ( int(check_output( [wcap, coverpath + "frame-0001.jpg"] )) * ns.mcudensity ) / 100
+frame_capacity = int( check_output( [wcap_prog, "-comp", ns.comp, "-bpf", str(ns.bpf), "-nfreqs", str(ns.nfreqs),  coverpath + "frame-0003.jpg"] ) )
+frame_capacity = (frame_capacity * ns.mcudensity) / 100
+
+print("Frame capacity = {}".format(frame_capacity))
+# Find an appropriate chunk size - try to ensure at least two
+# copies per cover medium:
+mlen = os.path.getsize(message_file)
+print("Message total size = {} bytes.".format(mlen))
+nf_per_message = int( mlen / nframes )
+#if nf < min_reps:
+#    print("Sorry! This payload won't fit.")
+#    quit()
+frames_per_copy = float(mlen) / frame_capacity
+print("Frames per copy: {}".format(frames_per_copy))
+
+nreps = float(nframes) / frames_per_copy
+print("Number of repetitions = {}".format(nreps))
+if nreps < 1:
+    print("Message appears to be too big for this video.")
+    quit()
+
+#chunk_size = min_reps * nf
+
+# libjel bitstreams will insert 3 extra bytes of overhead:
+# 1) density
+# 2) length = 4 bytes
+# 3) checksum
+# bitstream_overhead = 3
+bitstream_overhead = 6
+
+# Chunking (below) splits a message into chunks, each of which will
+# fit into a frame.  Chunks introduce N bytes each of 
+# 1) sequence number
+# 2) total number of chunks,
+# 3) chunk length for this frame
+chunk_overhead = 21
+
+# We now also compute the payload checksum (adler32) for the chunk:
+chunk_checksum = 4
+margin = 10
+chunk_size = int(frame_capacity) - (bitstream_overhead + chunk_overhead + chunk_checksum + margin)
+
+
+if (chunk_size < min_chunk_size):
+    chunk_size = min_chunk_size
+
+print("chunk_size = {}".format(chunk_size))
+if (chunk_size > frame_capacity):
+    print( "You might need more video frames, since chunk_size is > frame_capacity={}.".format(frame_capacity) )
+    quit()
+      
+# Divide mlen by the number of files:
+   
+
+# Rethink this - unless they are very large, plain text files will
+# get chopped up into tiny pieces.  We should establish a minimum
+# packet size, say 16.  Impose a constraint that each packet encode
+# the sequence number and then the total number of packets in the
+# video.
+
+nchunks1 = int(mlen / chunk_size)
+rem = mlen % chunk_size
+print("Last chunk size should be {}.".format(rem))
+if rem > 0:
+    nchunks1 += 1
+chunks = []
+print("Expected number of chunks: {}".format(nchunks1))
+
+# Based on the frame range and computed chunk size, split the original
+# message into payloads, one frame per payload:
+
+with open(message_file, 'rb') as f:
+    i = 0
+    while i >= 0:
+        x = f.read(chunk_size)
+        if x is None:
+            i = -1
+        else:
+            chunkname = chunk_dir + "/chunk{}.dat".format(i)
+            i += 1
+            if len(x) != chunk_size:
+                print("{} len={}".format(chunkname, len(x)))
+            with open(chunkname, 'wb') as g:
+                # Simple packet:
+                # Sequence number,  number of sequences, and  length of payload
+                g.write("{:05d}{:05d}{:05d}".format(i, nchunks1, len(x)).encode())
+                g.write(x)                # The payload
+                checksum = zlib.adler32(x)
+                # Big issue still to be resolved: big-endian or little endian???
+                g.write(checksum.to_bytes(4, 'big'))
+            chunks.append(chunkname)
+            if len(x) < chunk_size:
+                i = -1
+
+                
+nchunks = len(chunks)
+print("Actual number of chunks: {}".format(nchunks))
+
+log = open(wedge_dir + '/video_wedge.log', 'w')
+
+print("========== using ffmpeg in {}".format(ffmpeg_prog))
+print("========== using wedge in {}".format(wedge_prog))
+
+# s = ns.seed
+
+wedge_params = [ "-setval",
+                 "-comp", ns.comp, 
+                 "-verbose", "8",
+                 "-quanta", str(ns.quanta), 
+                 "-bpf", str(ns.bpf),
+                 "-nfreqs", str(ns.nfreqs),
+                 "-maxfreqs", str(ns.maxfreqs),
+                 "-mcudensity", str(ns.mcudensity) ]
+
+if ns.quality is not None:
+    wedge_params = wedge_params + [ "-quality", ns.quality ]
+
+if ns.freq_list is not None:
+    wedge_params = wedge_params + [ "-freq", ns.freq_list ]
+
+if ns.ecc is None:
+    wedge_params = wedge_params + [ "-noecc" ]
+else:
+    wedge_params = wedge_params + [ "-ecc", str(ns.ecc) ]
+
+
+cmdstring = ''
+
+exp_frame_density = frame_capacity
+
+# k will be the steg frame number:
+k = 1
+seeds = []
+stegs = []
+# Collect seeds and steg files here to keep the PRN aligned correctly:
+for i in range(start_frame, end_frame+1):
+    seeds = seeds + [ random.randint(1,65536) ]
+    stegs = stegs + [ wedge_dir + "/frame-{:04}.jpg".format(k) ]
+    k += 1
+
+k = 0    
+for i in range(start_frame, end_frame+1):
+    cover = coverpath + "frame-{:04}.jpg".format(i)
+    qcover = coverpath + "qframe-{:04}.jpg".format(i)    
+
+    # Start the steg frames at 1, so it looks normal to ffmpeg:
+    steg = stegs[k]
+    s = seeds[k]
+    k += 1
+
+    # print (" x = ", x)
+    x = exp_frame_density
+
+    # x = ( int(check_output( [wcap_prog, cover] )) * ns.mcudensity ) / 100
+
+    # Generate a new "seed" for each invocation of wedge, but that
+    # seed itself is a result of supplying this script's seed
+    # argument to the Python PRN:
+
+
+    if x > chunk_size:
+        j = i % nchunks
+        if ns.jpeg_quality is not None and not os.path.exists( qcover ):
+            # print("Generating ", qcover)
+            Image.open(cover).save(qcover, "JPEG", quality=ns.jpeg_quality)
+            # change_frame_params(cover, quality=ns.jpeg_quality)
+        else:
+            shutil.copyfile(cover, qcover)
+            
+        if ns.seed is not None:
+            # Value of s is already set above:
+            #s = random.randint(1,65536)    
+            cmdlist = [ wedge_prog ] + wedge_params + [ "-seed", str(s), "-data", chunks[j], qcover, steg ]
+        else:
+            cmdlist = [ wedge_prog ] + wedge_params + [ "-data", chunks[j], qcover, steg ]
+    else:
+        cmdlist =  ["cp", qcover, steg]
+
+    if log is not None:
+        log.write("{}\n".format(' '.join(cmdlist)))
+
+    cmdstring = cmdstring + ' '.join(cmdlist) + '\n'
+    
+
+print ("starting parallel")
+
+cmd = ['parallel', '--jobs', NPROCS]
+
+p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+_s_out, _s_err = p.communicate(input=cmdstring.encode())
+
+if p.returncode:
+   print (f'parallel wedge returned {p.returncode}')
+   with open ('/tmp/parallel-wedge.log', 'a+') as l_out:
+      if _s_out:
+         l_out.write (_s_out)
+      if _s_err:
+         l_out.write (_s_err)
+
+
+
+p = [ "-y" ] + ffmpeg_params
+# p = ["-y", "-pix_fmt", "yuvj420p" ]
+
+
+
+if output_video is None:
+    print("Not producing an output video.  You can use the JPEG files in " + wedge_dir)
+else:
+    if ns.scale is not None:
+        p += [ "-vf", "scale=iw*{}:ih*{}".format(ns.scale,ns.scale) ]
+
+    if ns.rate_out is None:
+        if os.path.exists(wav_file):
+            cmd = [ffmpeg_prog] + ["-i", wedge_dir + "/frame-%04d.jpg", "-i", wav_file] + p + [ output_video]
+        else:
+            cmd = [ffmpeg_prog] + ffmpeg_color + ["-i", wedge_dir + "/frame-%04d.jpg"] + p + ffmpeg_color + [ output_video] 
+    else:
+        r = str(ns.rate_out)
+        # -crf 0 with an output extension of .mp4 SHOULD force lossless compression to MPEG H.264:
+        if os.path.exists(wav_file):
+            cmd = [ffmpeg_prog] + ["-r", r, "-i", wedge_dir + "/frame-%04d.jpg", "-i", wav_file] + p + [ output_video] 
+        else:
+            cmd = [ffmpeg_prog] + ffmpeg_color + ["-r", r, "-i", wedge_dir + "/frame-%04d.jpg" ] + p + ffmpeg_color + [ output_video]
+    log.write("{}\n".format( cmd ))
+    call ( cmd )
+
+
+if log is not None:
+    log.close()
+
+
+if wedge_dir == ".wedge." + str(os.getpid()):
+    # we are not in dash mode... so safe to delete
+    if CLEANUP:
+        shutil.rmtree(wedge_dir, ignore_errors=True)
+    
+if CLEANUP:
+    shutil.rmtree(chunk_dir, ignore_errors=True)
+
+

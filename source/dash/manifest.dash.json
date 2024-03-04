@@ -1,0 +1,14 @@
+{
+    "plugins": [
+        {
+            "file_path": "DestiniDash",
+            "plugin_type": "comms",
+            "file_type": "python",
+            "node_type": "server",
+            "python_module": "DestiniDash.DestiniDash",
+            "python_class": "DestiniDash",
+            "config_path": "DestiniDash",
+	    "channels": ["destiniDash"]
+        }
+    ]
+}

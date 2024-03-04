@@ -1,0 +1,14 @@
+{
+    "plugins": [
+        {
+            "file_path": "DestiniPixelfed",
+            "plugin_type": "comms",
+            "file_type": "python",
+            "node_type": "any",
+            "python_module": "DestiniPixelfed.DestiniPixelfed",
+            "python_class": "DestiniPixelfed",
+            "config_path": "DestiniPixelfed",
+	    "channels": ["destiniPixelfed"]
+        }
+    ]
+}

@@ -1,0 +1,34 @@
+version: '3.7'
+
+networks:
+  rib-overlay-network:
+    external: true
+
+services:
+  avideo-redis:
+    container_name: avideo-redis
+    image: redis:6.0.6
+    labels:
+      race.rib.deployment-name: ${DEPLOYMENT_NAME}
+    networks:
+    - rib-overlay-network
+
+  avideo-redis-whiteboard:
+    command: -w 8
+    container_name: avideo-redis-whiteboard
+    depends_on:
+    - avideo-redis
+    hostname: race.example1
+    image: ghcr.io/tst-race/race-core/twosix-whiteboard:main
+    labels:
+      race.rib.deployment-name: ${DEPLOYMENT_NAME}
+    networks:
+    - rib-overlay-network
+    environment:
+    - REDIS_HOSTNAME=avideo-redis
+x-logging:
+  driver: json-file
+  options:
+    max-file: '5'
+    max-size: 1m
+

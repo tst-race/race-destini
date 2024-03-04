@@ -1,0 +1,65 @@
+#!/usr/bin/env python
+
+import os
+import sys
+import glob
+import shutil
+import subprocess
+from subprocess import call, check_output, Popen
+import argparse
+import random
+from PIL import Image
+
+wcap = "/usr/local/bin/wcap"
+ffprobe = "/usr/local/bin/ffprobe"
+if not os.path.exists(ffprobe):
+    # Fall back to the one that we might have picked up from debian:
+    ffprobe = "/usr/bin/ffprobe"
+
+ffmpeg = "/usr/local/bin/ffmpeg"
+if not os.path.exists(ffmpeg):
+    # Fall back to the one that we might have picked up from debian:
+    ffmpeg = "/usr/bin/ffmpeg"
+
+parser = argparse.ArgumentParser(description='Insert steganographic content into a video stream.')
+parser.add_argument('-cover',  required=True, help='A cover input video.')
+parser.add_argument('-bpf', type=int, default=1, help='Bits per frequency to use for embedding (default=1)')
+parser.add_argument('-ecc', type=int, default=None, help='If provided, dictates the ECC block length. (default=None)')
+parser.add_argument('-nfreqs', type=int, default=4, help='If provided, dictates the number of frequencies per MCU. (default=4)')
+parser.add_argument('-mcudensity', type=int, default=100, help='Percentage of MCU usage (default 100).')
+parser.add_argument('-total', dest='total', action='store_true', help='If provided, print total number of bytes of capacity.')
+parser.add_argument('-msgsize', type=int, default=None, help='If provided, prints the minimum number of frames required to embed a message of this size.')
+ns = parser.parse_args()
+
+
+
+bytes_per_mcu = float(ns.bpf * ns.nfreqs) / float(8)
+
+call( [ ffmpeg, "-loglevel", "quiet", "-y", "-ss", "00:00:01", "-i", ns.cover, "-vframes", "1", "-q:v", "2", "/tmp/wcap.jpg" ] )
+frame_capacity = int( check_output( [wcap, "-bpf", str(ns.bpf), "-nfreqs", str(ns.nfreqs),  "/tmp/wcap.jpg" ] ) )
+
+# libjel bitstreams will insert 3 extra bytes of overhead:
+# 1) density
+# 2) length
+# 3) checksum
+bitstream_overhead = 3
+
+# Chunking (below) splits a message into chunks, each of which will
+# fit into a frame.  Chunks introduce N bytes each of 
+# 1) sequence number
+# 2) total number of chunks,
+# 3) chunk length for this frame
+chunk_overhead = 21
+margin = 10
+frame_capacity = int ( (frame_capacity * ns.mcudensity) / 100 ) - (bitstream_overhead + chunk_overhead + margin)
+
+
+nframes = int( check_output( [ ffprobe, "-v", "error", "-select_streams", "v:0", "-show_entries",  "stream=nb_frames", "-of", "default=nokey=1:noprint_wrappers=1", ns.cover ] ) )
+
+if ns.msgsize is not None:
+    print(ns.msgsize / frame_capacity)
+elif ns.total:
+    print(nframes * frame_capacity)
+else:
+    print(nframes, frame_capacity)
+

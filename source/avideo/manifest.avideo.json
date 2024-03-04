@@ -1,0 +1,14 @@
+{
+    "plugins": [
+        {
+            "file_path": "DestiniAvideo",
+            "plugin_type": "comms",
+            "file_type": "python",
+            "node_type": "any",
+            "python_module": "DestiniAvideo.DestiniAvideo",
+            "python_class": "DestiniAvideo",
+            "config_path": "DestiniAvideo",
+	    "channels": ["destiniAvideo"]
+        }
+    ]
+}

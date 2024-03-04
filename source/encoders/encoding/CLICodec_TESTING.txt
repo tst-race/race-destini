@@ -1,0 +1,38 @@
+Testing CLICodec in a RACE Build Container
+------- -------- -- - ---- ----- ---------
+
+Create a directory (e.g., "$HOME/research") containing the contents of
+this directory plus, from destini-sri.git:decomposed-ta2,
+
+    bin/	# from source/bin
+      jpegoptim
+      wedge.p3
+      unwedge.p3
+
+    scripts/	# from source/scripts
+      initialize_jel2.sh
+      _jel2_codec_base.sh
+      jel2_decomposed_codec_p3.sh
+
+    covers/
+      destini.tar
+
+In one console, start the RACE build container:
+
+   % cd <path to>/plugin-comms-twosix-decomposed-cpp
+   % ./build_artifacts_in_docker_image.sh --name testplugin -f $HOME/research -c ./tailnull.sh
+
+In another console
+
+   % docker exec -it testplugin bash
+   root@0e0677b04275:/code# make
+   root@0e0677b04275:/code# ./testCLICodec [<test string>]
+
+   - Edit jel2_decomposed_codec_p3.sh, adding or removing
+     _jel2_codec_base.sh configuration symbols and retest.
+
+   - When done, exit the docker bash session and then enter
+
+       docker kill testplugin
+
+     to terminate the container.

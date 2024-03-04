@@ -1,0 +1,57 @@
+{
+    "channelGid": "destiniAvideo",
+    "connectionType": "CT_INDIRECT",
+    "description": "Implementation of Destini's Avideo Transport",
+    "reliable": false,
+    "sendType": "ST_STORED_ASYNC",
+    "transmissionType": "TT_UNICAST",
+    "multiAddressable": false,
+    "bootstrap": false,
+    "linkDirection": "LD_LOADER_TO_CREATOR",
+    "isFlushable": false,
+    "duration_s": -1,
+    "period_s": -1,
+    "mtu": 1000000,
+    "roles": [
+        {
+        "roleName": "default",
+        "mechanicalTags": [],
+        "behavioralTags": [],
+        "linkSide": "LS_BOTH"
+	}
+    ],
+    
+    "maxSendsPerInterval": 1000,
+    "secondsPerInterval": 864000,
+    "intervalEndTime": 0,
+    "sendsRemainingInInterval": 1000,
+    
+    "maxLinks": 2000,
+    "creatorsPerLoader": -1,
+    "loadersPerCreator": -1,
+    "supported_hints": [],
+        "creatorExpected": {
+        "send": {
+            "bandwidth_bps": 10000,
+            "latency_ms": 7000,
+            "loss": 0.1
+        },
+        "receive": {
+            "bandwidth_bps":10000,
+            "latency_ms": 7000,
+            "loss": 0.1
+        }
+    },
+    "loaderExpected": {
+        "send": {
+            "bandwidth_bps": 500000,
+            "latency_ms": 4900,
+            "loss": 0.1
+        },
+        "receive": {
+            "bandwidth_bps":500000,
+            "latency_ms": 4900,
+            "loss": 0.1
+        }
+    }
+}

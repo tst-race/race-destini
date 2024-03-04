@@ -1,0 +1,86 @@
+#!/usr/bin/env python
+
+import os
+import sys
+import glob
+import psutil
+import shutil
+import subprocess
+from subprocess import call, check_output, Popen
+import time
+import random
+import argparse
+import numpy as np
+from PIL import Image
+
+#mkdir .tmp
+#mkdir .stmp
+#echo "Using multiplier 0.5"
+#echo "Using offset 64"
+
+
+def maybe_mkdir(dir):
+   try:
+      os.mkdir(dir)
+   except:
+      print("Cleaning and reusing {}.".format(dir))
+      files = glob.glob(dir+"/*")
+      for f in files:
+         os.remove(f)
+
+
+
+parser = argparse.ArgumentParser(description="Squash a video's dynamic range.")
+parser.add_argument('-input',  required=True, help='A cover input video.')
+parser.add_argument('-output',  required=True, help='Squashed video output.')
+parser.add_argument('-scale', type=float, default=0.5, help='Scale factor for dynamic range.')
+parser.add_argument('-offset', type=int, default=None, help='Offset for dynamic range (applied after scaling).')
+ns = parser.parse_args()
+
+maybe_mkdir('.tmp')
+os.system("/usr/local/bin/ffmpeg -i {} -q:v 1 .tmp/frame-%04d.jpg".format(ns.input))
+
+# Compute frame count:
+frame_files = glob.glob(".tmp/f*.jpg")
+nfiles = len(frame_files)
+
+if ns.offset is None:
+    offset = (1.0 - ns.scale) * 128
+else:
+    offset = ns.offset
+
+one_shot = True
+
+for x in frame_files:
+    im_in = Image.open(x)
+    pixel = np.asarray(im_in)
+    imax, jmax, kmax = pixel.shape
+    out = np.zeros((imax, jmax, kmax), dtype='int8')
+    if one_shot:
+        im_out = Image.eval( im_in, lambda p: int(ns.scale * p + offset) )
+    else:
+        for i in range(imax):
+            for j in range(jmax):
+                for k in range(len(v)):
+                    out[i,j,k] = int( (ns.scale * v[k]) + ns.offset )
+#    im_out = Image.fromarray(out, 'RGB')
+    f = os.path.split(x)
+    x_out = os.path.join( f[0], 's'+f[1] )
+    im_out.save(x_out)
+    print(x_out)
+
+os.system("/usr/local/bin/ffmpeg -i .tmp/sframe-%04d.jpg {}".format(ns.output))
+
+
+
+#cd .tmp
+#foreach a (*.jpg)
+#  jpegtopnm -quiet $a | pamfunc -multiplier 0.5 | pamfunc -adder 64 | ppmtojpeg -quality 95 > ../.stmp/`basename $a`
+#  echo ".tmp/$a => .stmp/`basename $a`"
+#end
+#cd ..
+#/usr/local/bin/ffmpeg -i .stmp/frame-%04d.jpg  -qp 1 $2
+#rm -fr .tmp .stmp
+
+# Alternative method for squashing?
+# ffmpeg -i Annapurna_out.mp4 -filter_complex eq=0.5 test.mp4

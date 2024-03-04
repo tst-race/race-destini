@@ -1,0 +1,58 @@
+{
+   "personas": {},
+   "whiteboards": {
+   	"userModels": {
+           "facebook": {
+                "maxPeriodActions": 25, "%": "posts",
+                "savePeriodDays": 1
+           },
+           "default": {
+                "maxMiB": 200000, "%": "200 MiB/item",
+                "maxItems": 1000, "%": "photos or videos",
+                "maxPeriodActions": 3600, "%": "API calls",
+                "savePeriodHours": 1
+           }
+      },
+      "classes": {
+         "Avideo": {
+            "channel": "IOM_CT_AVIDEO",
+            "driver_path": "/usr/local/bin/geckodriver",
+            "connection_duration": 600,
+            "initial_retry_wait": 4,
+            "max_retry_count": 5,
+            "next_wait_lambda": "lambda _t: 2 * _t # exponential backoff",
+            "video_cover_dir": "/ramfs/destini/covers/video"
+         }
+      },
+      "channel order": [
+         "IOM_CT_AVIDEO"
+      ],
+      "instances": {
+         "race.example1": {
+            "class": "Avideo",
+            "encoder_url": "https://encoder",
+            "url": "https://race.example1",
+	    "userModel": "default",
+            "loop_delay": 10,
+            "credentials": {
+               "persona_filter": "lambda _p: _p",
+               "account": "{persona}",
+               "password": "password1234"
+            }
+         },
+	 "avideo.test": {
+            "class": "Avideo",
+            "encoder_url": "https://avideo.test:8443",
+            "url": "https://avideo.test",
+            "loop_delay": 10,
+	    "userModel": "default",
+            "credentials": {
+               "persona_filter": "lambda _p: _p",
+               "account": "{persona}",
+               "password": "password1234"
+            }
+         }
+
+      }
+   }
+}

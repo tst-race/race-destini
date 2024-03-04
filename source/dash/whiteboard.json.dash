@@ -1,0 +1,84 @@
+{
+   "personas": {},
+   "codecs": {
+      "JEL2-PixelFed": {
+         "media": {
+            "capacities": "/ramfs/destini/covers/jpeg/capacities.txt",
+            "android_capacities": "/data/data/com.twosix.race/race/comms/DestiniPixelfed/covers/jpeg/android_capacities.txt",
+            "maximum": 3000
+         },
+         "path": "/usr/local/lib/race/comms/DestiniDash/scripts/jel2_Pixelfed_codec_redis.sh",
+         "android_path": "/data/data/com.twosix.race/race/comms/DestiniPixelfed/scripts/jel2_Pixelfed_codec_android.sh",
+         "args": {
+            "common": "-seed <secret> -bpf 1 -nfreqs 1 -maxfreqs 6",
+            "encode": "<coverfile>"
+         }
+      }
+   },
+   "whiteboards": {
+   	"userModels": {
+           "facebook": {
+                "maxPeriodActions": 25, "%": "posts",
+                "savePeriodDays": 1
+           },
+           "default": {
+                "maxMiB": 200000, "%": "200 MiB/item",
+                "maxItems": 1000, "%": "photos or videos",
+                "maxPeriodActions": 3600, "%": "API calls",
+                "savePeriodHours": 1
+           }
+       },
+      "classes": {
+         "Pixelfed": {
+            "channel": "IOM_CT_GENERAL",
+            "driver_path": "/usr/local/bin/geckodriver",
+            "connection_duration": 600,
+            "initial_retry_wait": 4,
+            "max_retry_count": 50,
+            "next_wait_lambda": "lambda _t: 2 * _t # exponential backoff",
+            "codecs": [
+               "JEL2-PixelFed"
+            ]
+         },
+         "DashSvr": {
+            "channel": "IOM_CT_D_SVR",
+            "image_cover_dir": "/ramfs/destini/covers/jpeg",
+            "video_cover_dir": "/ramfs/destini/covers/dash",
+            "encode_app": "/usr/local/lib/race/comms/DestiniDash/scripts/to_dash_svr.sh",
+            "decode_app": "/usr/local/lib/race/comms/DestiniDash/scripts/video_unwedge",
+            "image_steg_dir": "/ramfs/destini/steg/jpeg",
+            "video_steg_dir": "/ramfs/destini/steg/dash"
+         }
+      },
+      "channel order": [
+         "IOM_CT_D_SVR",
+         "IOM_CT_GENERAL"
+      ],
+      "instances": {
+         "race.example2": {
+            "class": "Pixelfed",
+            "url": "https://race.example2",
+            "loop_delay": 3,
+	    "comment_prob": 0.1,
+	    "userModel": "default",	
+            "credentials": {
+               "persona_filter": "lambda _p: '-'.join (map (lambda _s: str (int (_s)) if _s.isnumeric () else _s, _p.split ('-')))",
+               "account": "{persona}@{persona}.{persona}",
+               "password": "password1234"
+            }
+         },
+	 "pixelfed-destini.test": {
+            "class": "Pixelfed",
+            "url": "https://pixelfed-destini.test",
+            "loop_delay": 3,
+	    "comment_prob": 0.1,
+	    "userModel": "default",
+            "credentials": {
+               "persona_filter": "lambda _p: _p",
+               "account": "{persona}@pixelfed-destini.test",
+               "password": "password1234"
+            }
+         }
+      }
+   }
+}
